@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NexDown — YouTube Downloader</title>
+    <meta name="description" content="Download YouTube videos instantly in multiple formats. Free, fast, and private.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+
+    <!-- Animated background orbs -->
+    <div class="bg-orb bg-orb--1"></div>
+    <div class="bg-orb bg-orb--2"></div>
+    <div class="bg-orb bg-orb--3"></div>
+
+    <main class="container">
+        <div class="card glass">
+            <!-- Header -->
+            <header>
+                <div class="logo" aria-label="NexDown logo">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path
+                            d="M21.5 7.5C21.5 5.5 20.5 4.5 18.5 4.5H5.5C3.5 4.5 2.5 5.5 2.5 7.5V16.5C2.5 18.5 3.5 19.5 5.5 19.5H18.5C20.5 19.5 21.5 18.5 21.5 16.5V7.5Z"
+                            stroke="url(#logo-grad)" stroke-width="1.5" stroke-linecap="round"
+                            stroke-linejoin="round" />
+                        <path d="M10 9.5L15 12L10 14.5V9.5Z" fill="url(#logo-grad)" />
+                        <defs>
+                            <linearGradient id="logo-grad" x1="2.5" y1="4.5" x2="21.5" y2="19.5"
+                                gradientUnits="userSpaceOnUse">
+                                <stop stop-color="#38bdf8" />
+                                <stop offset="1" stop-color="#8b5cf6" />
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <h1>NexDown</h1>
+                </div>
+                <p class="subtitle">Download YouTube videos instantly.</p>
+            </header>
+
+            <!-- Download form -->
+            <form id="downloadForm" novalidate>
+                <div class="input-group">
+                    <input type="url" id="urlInput" placeholder="Paste YouTube URL here…" required autocomplete="off"
+                        aria-label="YouTube URL">
+                    <button type="button" class="icon-btn" id="pasteBtn" title="Paste from clipboard"
+                        aria-label="Paste URL">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- Settings row -->
+                <div class="settings-row">
+                    <div class="setting-item">
+                        <label for="formatSelect" class="format-label">Quality</label>
+                        <div class="select-wrapper">
+                            <select id="formatSelect" aria-label="Download format">
+                                <option value="best">Best Quality (MP4)</option>
+                                <option value="720p">720p (MP4)</option>
+                                <option value="480p">480p (MP4)</option>
+                                <option value="audio">Audio Only (M4A)</option>
+                            </select>
+                            <svg class="select-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2">
+                                <polyline points="6 9 12 15 18 9" />
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="setting-item setting-item--small">
+                        <label for="threadInput" class="format-label">Threads</label>
+                        <input type="number" id="threadInput" min="1" max="16" value="4"
+                            aria-label="Number of download threads">
+                    </div>
+                </div>
+
+                <button type="submit" class="primary-btn" id="downloadBtn">
+                    <svg class="btn-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    <span>Download</span>
+                    <svg class="spinner" viewBox="0 0 50 50" style="display:none;">
+                        <circle class="path" cx="25" cy="25" r="20" fill="none" stroke-width="5" />
+                    </svg>
+                </button>
+            </form>
+
+            <!-- Progress -->
+            <section class="progress-section" id="progressSection" style="display:none;" aria-live="polite">
+                <div class="progress-info">
+                    <span id="progressMessage">Preparing download…</span>
+                    <span id="progressPercentage">0%</span>
+                </div>
+                <div class="progress-track">
+                    <div class="progress-bar" id="progressBar"></div>
+                </div>
+            </section>
+
+            <!-- Result / Error -->
+            <div class="result-area" id="resultArea" style="display:none;" role="alert"></div>
+        </div>
+
+        <footer class="footer">
+            <p>Files are auto-deleted after 2 hours&ensp;·&ensp;No data is stored</p>
+        </footer>
+    </main>
+
+    <!-- Toast container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+
+</html>
