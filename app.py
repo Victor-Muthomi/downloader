@@ -1,233 +1,103 @@
-import os
-import re
-import time
-import uuid
+"""NexDown Flask application."""
+
 import logging
-import threading
-from datetime import datetime, timedelta
-from flask import Flask, render_template, request, jsonify, send_from_directory, abort
+
+import os
+
+from flask import Flask, abort, jsonify, render_template, request, send_from_directory
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import yt_dlp
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DOWNLOADS_DIR = os.path.join(BASE_DIR, 'downloads')
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-
-MAX_FILE_AGE_HOURS = 2          # auto-delete files older than this
-CLEANUP_INTERVAL_SECS = 600     # run cleanup every 10 minutes
-ALLOWED_FORMATS = {
-    'best':      'bestvideo+bestaudio/best',
-    '720p':      'bestvideo[height<=720]+bestaudio/best[height<=720]/best',
-    '480p':      'bestvideo[height<=480]+bestaudio/best[height<=480]/best',
-    'audio':     'bestaudio[ext=m4a]/bestaudio/best',
-}
-
-# YouTube URL validation regex
-YT_URL_RE = re.compile(
-    r'^(https?://)?(www\.)?(youtube\.com/(watch\?.*v=|shorts/|embed/|live/)|youtu\.be/)[A-Za-z0-9_\-]{11}'
+from config import ALLOWED_FORMATS, DOWNLOADS_DIR, FLASK_DEBUG, HOST, MAX_BATCH_SIZE, PORT, RATE_LIMIT_STORAGE, SECRET_KEY
+from download_manager import (
+    cancel_task,
+    downloads_enabled,
+    enqueue_download,
+    get_task,
+    list_active_tasks,
+    set_downloads_enabled,
+    start_background_threads,
+    verify_file_access,
 )
-ANSI_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+from helpers import check_ffmpeg, get_health_status, probe_url, sanitize_error, validate_url
 
-# ---------------------------------------------------------------------------
-# App setup
-# ---------------------------------------------------------------------------
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
+app.config['SECRET_KEY'] = SECRET_KEY
 
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=["200 per hour"],
-    storage_uri="memory://",
+    default_limits=['200 per hour'],
+    storage_uri=RATE_LIMIT_STORAGE,
 )
 
-# In-memory task store  (task_id -> dict)
-download_tasks: dict = {}
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _validate_startup() -> None:
+    ffmpeg_ok, ffmpeg_msg = check_ffmpeg()
+    if not ffmpeg_ok:
+        app.logger.error('Startup check failed: %s', ffmpeg_msg)
+        set_downloads_enabled(False)
+    else:
+        app.logger.info('FFmpeg OK: %s', ffmpeg_msg)
 
-def sanitize_error(error_msg: str) -> str:
-    """Return a user-friendly error message instead of raw yt-dlp tracebacks."""
-    msg = str(error_msg)
-    if 'is not a valid URL' in msg or 'Unsupported URL' in msg:
-        return 'The URL provided is not supported. Please enter a valid YouTube video link.'
-    if 'Video unavailable' in msg or 'Private video' in msg:
-        return 'This video is unavailable. It may be private, deleted, or region-locked.'
-    if 'Sign in to confirm' in msg or 'age' in msg.lower():
-        return 'This video requires age verification and cannot be downloaded.'
-    if 'HTTP Error 403' in msg:
-        return 'Access denied by YouTube. Please try again later.'
-    if 'HTTP Error 429' in msg:
-        return 'YouTube is rate-limiting requests. Please wait a few minutes and try again.'
-    if 'Network' in msg or 'connection' in msg.lower() or 'timed out' in msg.lower():
-        return 'A network error occurred. Please check your connection and try again.'
-    if 'ffmpeg' in msg.lower() or 'postprocessor' in msg.lower():
-        return 'Post-processing failed. FFmpeg may not be installed on the server.'
-    # Generic fallback — hide internal paths
-    return re.sub(r'/[^\s]+/', '.../', msg)[:300]
+    health = get_health_status()
+    if health['status'] != 'ok':
+        app.logger.warning('Health check degraded: %s', health)
+        if not health['downloads_writable'] or not health['disk']['ok']:
+            set_downloads_enabled(False)
 
 
-def validate_youtube_url(url: str) -> bool:
-    """Strict regex validation for YouTube URLs."""
-    return bool(YT_URL_RE.match(url.strip()))
+_validate_startup()
+start_background_threads()
 
-
-def progress_hook(task_id: str, info: dict):
-    """Called by yt-dlp during download to report progress."""
-    if task_id not in download_tasks:
-        return
-
-    if info.get('status') == 'downloading':
-        raw = ANSI_RE.sub('', info.get('_percent_str', '0%')).strip()
-        try:
-            percent = min(float(raw.replace('%', '')), 99.9)
-        except (ValueError, TypeError):
-            percent = 0.0
-        speed = info.get('_speed_str', '')
-        speed = ANSI_RE.sub('', speed).strip() if speed else ''
-        eta = info.get('_eta_str', '')
-        eta = ANSI_RE.sub('', eta).strip() if eta else ''
-        msg = f"Downloading: {raw}"
-        if speed:
-            msg += f"  •  {speed}"
-        if eta:
-            msg += f"  •  ETA {eta}"
-
-        download_tasks[task_id].update({
-            'status': 'processing',
-            'progress': percent,
-            'message': msg,
-        })
-
-    elif info.get('status') == 'finished':
-        download_tasks[task_id].update({
-            'status': 'processing',
-            'progress': 100,
-            'message': 'Merging audio & video streams…',
-        })
-
-
-def download_worker(task_id: str, url: str, fmt: str, threads: int = 4):
-    """Background thread that performs the actual download."""
-    try:
-        ydl_opts = {
-            'format': ALLOWED_FORMATS.get(fmt, 'bestvideo+bestaudio/best'),
-            'outtmpl': os.path.join(DOWNLOADS_DIR, '%(title).80s.%(ext)s'),
-            'progress_hooks': [lambda d: progress_hook(task_id, d)],
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'updatetime': False,
-            'restrictfilenames': True,
-            'concurrent_fragment_downloads': threads,
-            'merge_output_format': 'mp4' if fmt != 'audio' else None,
-            'postprocessor_args': {
-                'ffmpeg': ['-async', '1', '-metadata:s:v:0', 'handler_name=VideoHandler', '-metadata:s:a:0', 'handler_name=SoundHandler']
-            },
-            'postprocessors': [{
-                'key': 'FFmpegVideoRemuxer',
-                'preferedformat': 'mp4',
-            }] if fmt != 'audio' else [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'm4a',
-            }],
-            'socket_timeout': 45,
-            'retries': 5,
-            'fragment_retries': 5,
-        }
-        # Remove None values
-        ydl_opts = {k: v for k, v in ydl_opts.items() if v is not None}
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            # yt-dlp may change ext after merge
-            if fmt != 'audio' and not filename.endswith('.mp4'):
-                possible = os.path.splitext(filename)[0] + '.mp4'
-                if os.path.exists(possible):
-                    filename = possible
-
-            basename = os.path.basename(filename)
-            download_tasks[task_id].update({
-                'status': 'success',
-                'progress': 100,
-                'message': 'Download complete!',
-                'filename': basename,
-                'title': info.get('title', basename),
-                'duration': info.get('duration_string', ''),
-                'thumbnail': info.get('thumbnail', ''),
-            })
-            app.logger.info('Download complete: %s', basename)
-
-    except yt_dlp.utils.DownloadError as e:
-        app.logger.error('yt-dlp DownloadError: %s', e)
-        download_tasks[task_id].update({
-            'status': 'error',
-            'progress': 0,
-            'message': sanitize_error(str(e)),
-        })
-    except yt_dlp.utils.ExtractorError as e:
-        app.logger.error('yt-dlp ExtractorError: %s', e)
-        download_tasks[task_id].update({
-            'status': 'error',
-            'progress': 0,
-            'message': sanitize_error(str(e)),
-        })
-    except OSError as e:
-        app.logger.error('OS error during download: %s', e)
-        download_tasks[task_id].update({
-            'status': 'error',
-            'progress': 0,
-            'message': 'Server storage error. Please try again later.',
-        })
-    except Exception as e:
-        app.logger.exception('Unexpected error during download')
-        download_tasks[task_id].update({
-            'status': 'error',
-            'progress': 0,
-            'message': sanitize_error(str(e)),
-        })
-
-
-# ---------------------------------------------------------------------------
-# Automatic file cleanup
-# ---------------------------------------------------------------------------
-def cleanup_old_files():
-    """Delete files in downloads/ older than MAX_FILE_AGE_HOURS."""
-    while True:
-        try:
-            cutoff = time.time() - (MAX_FILE_AGE_HOURS * 3600)
-            for fname in os.listdir(DOWNLOADS_DIR):
-                fpath = os.path.join(DOWNLOADS_DIR, fname)
-                if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
-                    os.remove(fpath)
-                    app.logger.info('Cleanup: deleted %s', fname)
-        except Exception:
-            app.logger.exception('Error during cleanup')
-        time.sleep(CLEANUP_INTERVAL_SECS)
-
-_cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
-_cleanup_thread.start()
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
 
+@app.route('/health', methods=['GET'])
+@limiter.exempt
+def health():
+    body = get_health_status()
+    body['downloads_enabled'] = downloads_enabled()
+    code = 200 if body['status'] == 'ok' and downloads_enabled() else 503
+    return jsonify(body), code
+
+
+@app.route('/probe', methods=['POST'])
+@limiter.limit('30 per minute')
+def probe():
+    if not downloads_enabled():
+        return jsonify({'status': 'error', 'message': 'Downloads are temporarily disabled.'}), 503
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'status': 'error', 'message': 'Invalid request body.'}), 400
+
+    url = (data.get('url') or '').strip()
+    if not url:
+        return jsonify({'status': 'error', 'message': 'No URL provided.'}), 400
+    if not validate_url(url):
+        return jsonify({'status': 'error', 'message': 'Invalid URL. Use a full http:// or https:// link.'}), 400
+
+    try:
+        result = probe_url(url)
+        return jsonify({'status': 'success', **result})
+    except yt_dlp.utils.DownloadError as e:
+        return jsonify({'status': 'error', 'message': sanitize_error(str(e))}), 400
+    except yt_dlp.utils.ExtractorError as e:
+        return jsonify({'status': 'error', 'message': sanitize_error(str(e))}), 400
+    except Exception as e:
+        app.logger.exception('Probe failed')
+        return jsonify({'status': 'error', 'message': sanitize_error(str(e))}), 400
+
+
 @app.route('/download', methods=['POST'])
-@limiter.limit("15 per minute")
+@limiter.limit('15 per minute')
 def start_download():
-    """Accept a URL + format, kick off background download, return task_id."""
     data = request.get_json(silent=True)
     if not data:
         return jsonify({'status': 'error', 'message': 'Invalid request body.'}), 400
@@ -239,61 +109,124 @@ def start_download():
     except (ValueError, TypeError):
         threads = 4
 
-    # --- Validation ---
     if not url:
         return jsonify({'status': 'error', 'message': 'No URL provided.'}), 400
-    if not validate_youtube_url(url):
+    if not validate_url(url):
+        return jsonify({'status': 'error', 'message': 'Invalid URL. Use a full http:// or https:// link.'}), 400
+    if fmt not in ALLOWED_FORMATS:
         return jsonify({
             'status': 'error',
-            'message': 'Invalid YouTube URL. Accepted formats: youtube.com/watch?v=…, youtu.be/…, youtube.com/shorts/…'
+            'message': f'Unsupported format. Choose from: {", ".join(ALLOWED_FORMATS.keys())}',
         }), 400
+
+    threads = max(1, min(threads, 16))
+    result = enqueue_download(url, fmt, threads)
+    if result['status'] == 'error':
+        return jsonify(result), 429
+    return jsonify({**result, 'message': 'Download queued'})
+
+
+@app.route('/download/batch', methods=['POST'])
+@limiter.limit('10 per minute')
+def start_batch_download():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'status': 'error', 'message': 'Invalid request body.'}), 400
+
+    urls = data.get('urls') or []
+    if not isinstance(urls, list) or not urls:
+        return jsonify({'status': 'error', 'message': 'No URLs provided.'}), 400
+
+    fmt = (data.get('format') or 'best').strip()
+    try:
+        threads = int(data.get('threads') or 4)
+    except (ValueError, TypeError):
+        threads = 4
+
     if fmt not in ALLOWED_FORMATS:
-        return jsonify({'status': 'error', 'message': f'Unsupported format. Choose from: {", ".join(ALLOWED_FORMATS.keys())}'}), 400
-    
-    # Thread validation (safe range 1-16)
+        return jsonify({
+            'status': 'error',
+            'message': f'Unsupported format. Choose from: {", ".join(ALLOWED_FORMATS.keys())}',
+        }), 400
+
     threads = max(1, min(threads, 16))
 
-    task_id = str(uuid.uuid4())
-    download_tasks[task_id] = {
-        'status': 'processing',
-        'progress': 0,
-        'message': 'Initializing download…',
-        'created_at': time.time(),
-    }
+    seen = set()
+    unique_urls = []
+    for raw in urls[:MAX_BATCH_SIZE]:
+        url = (raw or '').strip()
+        if url and url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
 
-    thread = threading.Thread(target=download_worker, args=(task_id, url, fmt, threads), daemon=True)
-    thread.start()
+    if not unique_urls:
+        return jsonify({'status': 'error', 'message': 'No valid URLs provided.'}), 400
 
-    return jsonify({'status': 'success', 'task_id': task_id, 'message': 'Download started'})
+    tasks = []
+    errors = []
+    for url in unique_urls:
+        if not validate_url(url):
+            errors.append({'url': url, 'message': 'Invalid URL.'})
+            continue
+        result = enqueue_download(url, fmt, threads)
+        if result['status'] == 'success':
+            tasks.append({'task_id': result['task_id'], 'url': url})
+        else:
+            errors.append({'url': url, 'message': result['message']})
+
+    if not tasks:
+        return jsonify({
+            'status': 'error',
+            'message': errors[0]['message'] if errors else 'Could not queue downloads.',
+            'errors': errors,
+        }), 429
+
+    return jsonify({
+        'status': 'success',
+        'message': f'Queued {len(tasks)} download(s)',
+        'tasks': tasks,
+        'errors': errors,
+    })
 
 
 @app.route('/status/<task_id>', methods=['GET'])
 @limiter.exempt
 def get_status(task_id):
-    """Return current progress for a download task."""
-    task = download_tasks.get(task_id)
+    task = get_task(task_id)
     if not task:
         return jsonify({'status': 'error', 'message': 'Task not found. It may have expired.'}), 404
-    # Don't expose internal fields
-    safe = {k: v for k, v in task.items() if k != 'created_at'}
-    return jsonify(safe)
+    return jsonify(task)
 
 
-@app.route('/file/<path:filename>', methods=['GET'])
-@limiter.limit("30 per minute")
-def serve_file(filename):
-    """Serve a downloaded file to the user's browser for saving to device."""
-    # Prevent directory traversal
-    safe_name = os.path.basename(filename)
-    fpath = os.path.join(DOWNLOADS_DIR, safe_name)
-    if not os.path.isfile(fpath):
+@app.route('/tasks/active', methods=['GET'])
+@limiter.exempt
+def active_tasks():
+    return jsonify({'tasks': list_active_tasks()})
+
+
+@app.route('/cancel/<task_id>', methods=['POST'])
+@limiter.limit('30 per minute')
+def cancel_download(task_id):
+    result = cancel_task(task_id)
+    code = 200 if result['status'] == 'success' else 400
+    return jsonify(result), code
+
+
+@app.route('/file/<task_id>', methods=['GET'])
+@limiter.limit('30 per minute')
+def serve_file(task_id):
+    token = request.args.get('token', '')
+    if not token:
         abort(404)
-    return send_from_directory(DOWNLOADS_DIR, safe_name, as_attachment=True)
+    filename = verify_file_access(task_id, token)
+    if not filename:
+        abort(404)
+    safe_name = os.path.basename(filename)
+    fpath = DOWNLOADS_DIR / safe_name
+    if not fpath.is_file():
+        abort(404)
+    return send_from_directory(str(DOWNLOADS_DIR), safe_name, as_attachment=True)
 
-
-# ---------------------------------------------------------------------------
-# Error handlers
-# ---------------------------------------------------------------------------
 
 @app.errorhandler(404)
 def not_found(e):
@@ -301,12 +234,14 @@ def not_found(e):
         return jsonify({'status': 'error', 'message': 'Resource not found.'}), 404
     return render_template('index.html'), 404
 
+
 @app.errorhandler(429)
 def rate_limited(e):
     return jsonify({
         'status': 'error',
-        'message': 'Too many requests. Please wait a minute before trying again.'
+        'message': 'Too many requests. Please wait a minute before trying again.',
     }), 429
+
 
 @app.errorhandler(500)
 def server_error(e):
@@ -315,4 +250,4 @@ def server_error(e):
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000, host='0.0.0.0')
+    app.run(debug=FLASK_DEBUG, port=PORT, host=HOST)

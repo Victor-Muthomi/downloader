@@ -4,8 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NexDown — YouTube Downloader</title>
-    <meta name="description" content="Download YouTube videos instantly in multiple formats. Free, fast, and private.">
+    <title>NexDown — Multi Video Downloader</title>
+    <meta name="description" content="Download videos from YouTube, TikTok, Vimeo, and hundreds of other sites. Free, fast, and private.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -14,14 +14,12 @@
 
 <body>
 
-    <!-- Animated background orbs -->
     <div class="bg-orb bg-orb--1"></div>
     <div class="bg-orb bg-orb--2"></div>
     <div class="bg-orb bg-orb--3"></div>
 
     <main class="container">
         <div class="card glass">
-            <!-- Header -->
             <header>
                 <div class="logo" aria-label="NexDown logo">
                     <svg width="36" height="36" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -40,14 +38,13 @@
                     </svg>
                     <h1>NexDown</h1>
                 </div>
-                <p class="subtitle">Download YouTube videos instantly.</p>
+                <p class="subtitle">Download from YouTube, TikTok, Vimeo, and 1,000+ sites.</p>
             </header>
 
-            <!-- Download form -->
             <form id="downloadForm" novalidate>
                 <div class="input-group">
-                    <input type="url" id="urlInput" placeholder="Paste YouTube URL here…" required autocomplete="off"
-                        aria-label="YouTube URL">
+                    <textarea id="urlInput" placeholder="Paste video URL here…&#10;(one per line for multiple downloads)" required autocomplete="off"
+                        aria-label="Video URL" rows="2"></textarea>
                     <button type="button" class="icon-btn" id="pasteBtn" title="Paste from clipboard"
                         aria-label="Paste URL">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -58,7 +55,6 @@
                     </button>
                 </div>
 
-                <!-- Settings row -->
                 <div class="settings-row">
                     <div class="setting-item">
                         <label for="formatSelect" class="format-label">Quality</label>
@@ -96,27 +92,36 @@
                 </button>
             </form>
 
-            <!-- Progress -->
-            <section class="progress-section" id="progressSection" style="display:none;" aria-live="polite">
-                <div class="progress-info">
-                    <span id="progressMessage">Preparing download…</span>
-                    <span id="progressPercentage">0%</span>
+            <section class="panel" id="activePanel" style="display:none;">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="panel-dot panel-dot--active"></span>
+                        Active Downloads
+                        <span class="panel-count" id="activeCount">0</span>
+                    </h2>
                 </div>
-                <div class="progress-track">
-                    <div class="progress-bar" id="progressBar"></div>
-                </div>
+                <div class="download-list" id="activeDownloads" aria-live="polite"></div>
             </section>
 
-            <!-- Result / Error -->
-            <div class="result-area" id="resultArea" style="display:none;" role="alert"></div>
+            <section class="panel" id="historyPanel">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="panel-dot panel-dot--history"></span>
+                        History
+                        <span class="panel-count" id="historyCount">0</span>
+                    </h2>
+                    <button type="button" class="text-btn" id="clearHistoryBtn" title="Clear history">Clear</button>
+                </div>
+                <div class="download-list" id="downloadHistory"></div>
+                <p class="panel-empty" id="historyEmpty">No downloads yet. Completed videos will appear here.</p>
+            </section>
         </div>
 
         <footer class="footer">
-            <p>Files are auto-deleted after 2 hours&ensp;·&ensp;No data is stored</p>
+            <p>Up to 5 concurrent downloads&ensp;·&ensp;Files auto-deleted after 2 hours</p>
         </footer>
     </main>
 
-    <!-- Toast container -->
     <div class="toast-container" id="toastContainer"></div>
 
     <script src="{{ url_for('static', filename='script.js') }}"></script>
