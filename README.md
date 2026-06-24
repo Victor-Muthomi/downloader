@@ -487,4 +487,4 @@ You are responsible for ensuring you have the right to download and store any co
 
 ## License
 
-MIT — see [LICENSE](LICENSE) if present, or adapt as needed for your deployment.
+MIT — see [LICENSE](LICENSE).
