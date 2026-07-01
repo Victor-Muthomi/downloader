@@ -12,15 +12,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnIcon = downloadBtn.querySelector('.btn-icon');
     const btnText = downloadBtn.querySelector('span');
     const spinner = downloadBtn.querySelector('.spinner');
-    const activePanel = document.getElementById('activePanel');
+    const activePanel = document.getElementById('sidebarColumn');
     const activeDownloads = document.getElementById('activeDownloads');
     const activeCount = document.getElementById('activeCount');
-    const historyPanel = document.getElementById('historyPanel');
     const downloadHistory = document.getElementById('downloadHistory');
     const historyCount = document.getElementById('historyCount');
     const historyEmpty = document.getElementById('historyEmpty');
     const clearHistoryBtn = document.getElementById('clearHistoryBtn');
     const toastContainer = document.getElementById('toastContainer');
+    const historyModalBtn = document.getElementById('historyModalBtn');
+    const closeHistoryBtn = document.getElementById('closeHistoryBtn');
+    const historyModal = document.getElementById('historyModal');
 
     const HISTORY_KEY = 'nexdown_history';
     const SESSION_KEY = 'nexdown_active';
@@ -127,6 +129,14 @@ document.addEventListener('DOMContentLoaded', () => {
         renderHistory();
     }
 
+    function removeHistoryItem(id) {
+        let items = loadHistory();
+        items = items.filter(item => item.id !== id);
+        saveHistory(items);
+        renderHistory();
+        toast('Video removed from history', 'success');
+    }
+
     function renderHistory() {
         const items = loadHistory();
         historyCount.textContent = items.length;
@@ -164,6 +174,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
+            // Delete button for this specific item
+            actions += `<button type="button" class="icon-btn delete-item-btn danger-text-btn" data-id="${item.id}" title="Delete item">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+            </button>`;
+
             const metaParts = [];
             if (item.site) metaParts.push(`<span class="card-meta-item">${escapeHtml(item.site)}</span>`);
             if (item.duration) metaParts.push(`<span class="card-meta-item">${escapeHtml(item.duration)}</span>`);
@@ -186,12 +203,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
             downloadHistory.appendChild(card);
         }
+
+        // Add event listeners right away to each delete button rendered
+        const deleteBtns = document.querySelectorAll('.delete-item-btn');
+        deleteBtns.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.currentTarget.dataset.id;
+                removeHistoryItem(id);
+            });
+        });
     }
 
     clearHistoryBtn.addEventListener('click', () => {
         saveHistory([]);
         renderHistory();
         toast('History cleared', 'success');
+        historyModal.setAttribute('aria-hidden', 'true');
+    });
+
+    // History Modal Logic
+    historyModalBtn.addEventListener('click', () => {
+        historyModal.setAttribute('aria-hidden', 'false');
+    });
+
+    closeHistoryBtn.addEventListener('click', () => {
+        historyModal.setAttribute('aria-hidden', 'true');
+    });
+
+    historyModal.addEventListener('click', (e) => {
+        if (e.target === historyModal) {
+            historyModal.setAttribute('aria-hidden', 'true');
+        }
     });
 
     // ── Toasts ────────────────────────────────────────────────────────
@@ -217,7 +259,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateActiveCount() {
         const n = activeJobs.size;
         activeCount.textContent = n;
-        activePanel.style.display = n > 0 ? 'block' : 'none';
+        if (activePanel) {
+            activePanel.style.display = n > 0 ? 'block' : 'none';
+        }
     }
 
     function renderThumb(thumbnail, title) {
