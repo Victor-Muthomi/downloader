@@ -1,7 +1,10 @@
 """Tests for Flask routes."""
 
+from io import BytesIO
+
 import pytest
 
+import app as app_module
 from app import app
 
 
@@ -50,3 +53,44 @@ def test_active_tasks(client):
 def test_probe_rejects_invalid_url(client):
     res = client.post('/probe', json={'url': 'http://localhost/private'})
     assert res.status_code == 400
+
+
+def test_batch_download_accepts_txt_upload(client, monkeypatch):
+    monkeypatch.setattr(
+        app_module,
+        'enqueue_download',
+        lambda url, fmt, threads: {'status': 'success', 'task_id': f'task-{url[-1]}', 'url': url},
+    )
+
+    data = {
+        'format': 'best',
+        'threads': '4',
+        'urls_file': (BytesIO(b'https://example.com/one\nhttps://example.com/two\n'), 'urls.txt'),
+    }
+
+    res = client.post('/download/batch', data=data, content_type='multipart/form-data')
+    assert res.status_code == 200
+    payload = res.get_json()
+    assert payload['status'] == 'success'
+    assert len(payload['tasks']) == 2
+
+
+def test_batch_download_accepts_json_urls(client, monkeypatch):
+    monkeypatch.setattr(
+        app_module,
+        'enqueue_download',
+        lambda url, fmt, threads: {'status': 'success', 'task_id': f'task-{url[-1]}', 'url': url},
+    )
+
+    res = client.post(
+        '/download/batch',
+        json={
+            'urls': ['https://example.com/one', 'https://example.com/two'],
+            'format': 'best',
+            'threads': 4,
+        },
+    )
+    assert res.status_code == 200
+    payload = res.get_json()
+    assert payload['status'] == 'success'
+    assert len(payload['tasks']) == 2

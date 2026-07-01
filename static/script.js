@@ -6,6 +6,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const form = document.getElementById('downloadForm');
     const urlInput = document.getElementById('urlInput');
     const pasteBtn = document.getElementById('pasteBtn');
+    const urlsFileInput = document.getElementById('urlsFileInput');
+    const urlsFileLabel = document.getElementById('urlsFileLabel');
     const formatSelect = document.getElementById('formatSelect');
     const threadInput = document.getElementById('threadInput');
     const downloadBtn = document.getElementById('downloadBtn');
@@ -62,6 +64,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 .map((line) => line.trim())
                 .filter((line) => line.length > 0)
         )];
+    }
+
+    function mergeUrls(...lists) {
+        return [...new Set(lists.flat().map((url) => url.trim()).filter(Boolean))];
     }
 
     function escapeHtml(str) {
@@ -533,6 +539,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     urlInput.addEventListener('input', () => markInputError(false));
 
+    if (urlsFileInput) {
+        urlsFileInput.addEventListener('change', () => {
+            const file = urlsFileInput.files?.[0];
+            urlsFileLabel.textContent = file ? file.name : 'No file selected';
+            markInputError(false);
+        });
+    }
+
     if (pasteBtn) {
         pasteBtn.addEventListener('click', async () => {
             try {
@@ -559,15 +573,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const raw = urlInput.value.trim();
         const format = formatSelect.value;
         const threads = parseInt(threadInput.value, 10) || 4;
+        const file = urlsFileInput?.files?.[0] || null;
 
-        if (!raw) {
+        if (!raw && !file) {
             markInputError(true);
-            toast('Please enter a video URL', 'warn');
+            toast('Please enter URLs or upload a TXT file', 'warn');
             urlInput.focus();
             return;
         }
 
-        const urls = parseUrls(raw);
+        const urlsFromText = parseUrls(raw);
+        const urls = mergeUrls(urlsFromText);
         const invalid = urls.filter((u) => !isValidUrl(u));
         if (invalid.length > 0) {
             markInputError(true);
@@ -584,8 +600,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             let started = 0;
+            const useBatch = urls.length > 1 || file;
 
-            if (urls.length === 1) {
+            if (!useBatch && urls.length === 1) {
                 const res = await fetch('/download', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -600,10 +617,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     started = 1;
                 }
             } else {
+                const formData = new FormData();
+                formData.append('format', format);
+                formData.append('threads', String(threads));
+                formData.append('urls_text', raw);
+                if (file) {
+                    formData.append('urls_file', file);
+                }
+
                 const res = await fetch('/download/batch', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ urls, format, threads }),
+                    body: formData,
                 });
                 const data = await res.json();
 
@@ -625,6 +649,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (started > 0) {
                 urlInput.value = '';
+                if (urlsFileInput) {
+                    urlsFileInput.value = '';
+                    urlsFileLabel.textContent = 'No file selected';
+                }
                 markInputError(false);
                 toast(started === 1 ? 'Download started' : `${started} downloads started`, 'success');
             }

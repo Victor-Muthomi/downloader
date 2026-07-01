@@ -95,6 +95,56 @@ def probe():
         return jsonify({'status': 'error', 'message': sanitize_error(str(e))}), 400
 
 
+def _parse_url_lines(raw_text: str) -> list[str]:
+    seen = set()
+    urls = []
+    for raw in (raw_text or '').splitlines():
+        url = (raw or '').strip()
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
+def _collect_batch_urls() -> list[str]:
+    urls = []
+
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        raw_urls = data.get('urls') or []
+        if isinstance(raw_urls, str):
+            urls.extend(_parse_url_lines(raw_urls))
+        elif isinstance(raw_urls, list):
+            for raw in raw_urls:
+                url = (raw or '').strip()
+                if url:
+                    urls.append(url)
+
+        raw_text = (data.get('urls_text') or '').strip()
+        if raw_text:
+            urls.extend(_parse_url_lines(raw_text))
+    else:
+        raw_urls = request.form.get('urls', '')
+        raw_text = request.form.get('urls_text', '')
+        if raw_urls:
+            urls.extend(_parse_url_lines(raw_urls))
+        if raw_text:
+            urls.extend(_parse_url_lines(raw_text))
+
+        url_file = request.files.get('urls_file')
+        if url_file and url_file.filename:
+            file_text = url_file.read().decode('utf-8', errors='replace')
+            urls.extend(_parse_url_lines(file_text))
+
+    seen = set()
+    unique_urls = []
+    for url in urls:
+        if url and url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
+    return unique_urls[:MAX_BATCH_SIZE]
+
+
 @app.route('/download', methods=['POST'])
 @limiter.limit('15 per minute')
 def start_download():
@@ -129,13 +179,13 @@ def start_download():
 @app.route('/download/batch', methods=['POST'])
 @limiter.limit('10 per minute')
 def start_batch_download():
-    data = request.get_json(silent=True)
-    if not data:
+    if not request.get_json(silent=True) and not request.form and not request.files:
         return jsonify({'status': 'error', 'message': 'Invalid request body.'}), 400
-
-    urls = data.get('urls') or []
-    if not isinstance(urls, list) or not urls:
+    urls = _collect_batch_urls()
+    if not urls:
         return jsonify({'status': 'error', 'message': 'No URLs provided.'}), 400
+
+    data = request.get_json(silent=True) or request.form
 
     fmt = (data.get('format') or 'best').strip()
     try:
@@ -151,20 +201,9 @@ def start_batch_download():
 
     threads = max(1, min(threads, 16))
 
-    seen = set()
-    unique_urls = []
-    for raw in urls[:MAX_BATCH_SIZE]:
-        url = (raw or '').strip()
-        if url and url not in seen:
-            seen.add(url)
-            unique_urls.append(url)
-
-    if not unique_urls:
-        return jsonify({'status': 'error', 'message': 'No valid URLs provided.'}), 400
-
     tasks = []
     errors = []
-    for url in unique_urls:
+    for url in urls:
         if not validate_url(url):
             errors.append({'url': url, 'message': 'Invalid URL.'})
             continue

@@ -152,6 +152,43 @@ header {
     margin-bottom: 16px;
 }
 
+.file-upload-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.file-upload-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--card-border);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: border-color var(--transition), background var(--transition), transform var(--transition);
+}
+
+.file-upload-btn:hover {
+    border-color: var(--accent-color);
+    background: rgba(14, 165, 233, 0.08);
+    transform: translateY(-1px);
+}
+
+.file-upload-label {
+    color: var(--text-secondary);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 #urlInput {
     width: 100%;
     background: var(--input-bg);
